@@ -2,15 +2,11 @@ import json
 import typing
 from collections import Counter
 
-import pandas as pd
-from datetime import datetime
-import pika, sys, os
+import pika
 import message_constants as msg
 from config import Config
 from accessors.db_accessor import DbAccessor
-from models.position import Position
 from accessors.ftx_order_handler import FtxOrderHandler
-from accessors.wrapped_ftx_client import WrappedFtxClient
 
 class PositionExecutor:
     def __init__(self):
@@ -37,16 +33,43 @@ class PositionExecutor:
             pass
         return []
 
-    def execute_position_changes(self):
+    def __create_optimal_position_execution_ordering(self, counter: Counter):
+        sales = {}
+        buys = {}
+        for k, v in counter.items():
+            if v < 0:
+                sales[k] = v
+            elif v > 0:
+                buys[k] = v
+        ordered_sales = sorted([(k, v) for (k, v) in sales.items()], key=lambda x: x[1])
+        ordered_buys = sorted([(k, v) for (k, v) in buys.items()], key=lambda x: x[1], reverse=True)
+        # For a given list of assets:
+        pointer_sales = 0
+        pointer_buys = 0
+        orders = []
+        while len(orders) <= len(ordered_sales) + len(ordered_buys):
+            running_sum = sum([o[1] for o in orders])
+            if pointer_sales == len(ordered_sales):
+                orders += ordered_buys[pointer_buys:]
+                break
+            if pointer_buys == len(ordered_buys):
+                orders += ordered_sales[pointer_sales:]
+                break
+            if abs(running_sum) >= ordered_buys[pointer_buys][1]:
+                orders += [ordered_buys[pointer_buys]]
+                pointer_buys += 1
+            else:
+                orders += [ordered_sales[pointer_sales]]
+                pointer_sales += 1
+        return orders
+
+    def __get_notional_netted_weightings(self, new_positions):
         def create_ftx_symbol_name(position):
             if position.product_type == 'PERP':
                 return f"{position.base}-PERP"
             else:
                 return f"{position.base}/{position.quote}"
 
-        new_positions = DbAccessor().fetch_unfilled_strategies()
-        # For netting purposes, let's consider everything that isn't a PERP to be denominated in USDT
-        # In the future, it may make sense
         existing_notional_exposures = {(f"{k}/USD" if 'PERP' not in k else k): v for (k, v) in self.order_handler.rest_client.get_notional_exposures().items()}
         total_account_value = self.order_handler.rest_client.get_net_account_value()
         # New positions represent relative weightings of the total account value
@@ -57,14 +80,25 @@ class PositionExecutor:
             notional_weightings[symbol] = total_account_value * position.relative_size
         counter = Counter(notional_weightings)
         counter.subtract(Counter(existing_notional_exposures))
-        sales = {}
-        buys = {}
-        for k, v in counter.items():
-            if v < 0:
-                sales[k] = v
-            elif v > 0:
-                buys[k] = v
-        print(sales, buys)
+        return counter
+
+
+    def execute_position_changes(self):
+        new_positions = DbAccessor().fetch_unfilled_strategies()
+        # For netting purposes, let's consider everything that isn't a PERP to be denominated in USDT
+        # In the future, it may make sense
+        counter = self.__get_notional_netted_weightings(new_positions)
+        counter = {'AVAX/USD': -100, 'AVAX-PERP': 50, 'SOL/USD': 50}
+        orders = self.__create_optimal_position_execution_ordering(counter)
+        for idx, (market, _) in enumerate([('AVAX/USD', -100), ('AVAX-PERP', 50), ('SOL/USD', 50)]):
+            value = counter.get(market)
+            side = 'buy' if value >= 0 else 'sell'
+            self.order_handler.fill_limit_order_in_quote_units(
+                market=market, side=side, size_in_quote=abs(value), aggression=min(.99, 0.5 + idx/len(orders))
+            )
+            counter = self.__get_notional_netted_weightings(new_positions)
+            print(counter)
+            break
 
     def on_message(self, ch, method, properties, body):
         b = json.loads(body)
@@ -87,5 +121,4 @@ class PositionExecutor:
         self.connection.close()
 
 if __name__ == '__main__':
-    sales = {'AVAX/USD': -90.97665217433, 'USD/USD': 7.68063993265, 'SOL/USD': -31.618116472579505, 'SOL-PERP': -10.53875}
-    for (market, notional)
+    PositionExecutor().execute_position_changes()
