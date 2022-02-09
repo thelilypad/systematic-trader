@@ -3,6 +3,7 @@ POSITION_SCHEDULING_QUEUE = 'pos_scheduler'
 POSITION_EXECUTING_QUEUE = 'pos_executor'
 LOG_QUEUE = 'logs'
 CLOCK_QUEUE = 'clock'
+WATCHER_QUEUE = 'watcher'
 
 def create_message_type(message: str, queue: str = '', exchange: str = '') -> str:
     """

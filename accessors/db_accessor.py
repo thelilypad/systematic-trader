@@ -8,6 +8,9 @@ from config import Config
 import pandas as pd
 from typing import List, Tuple
 
+class DbWriteException(BaseException):
+    pass
+
 """
 Simple wrapper class for supporting DB queries via SQL Alchemy
 (this actually just mostly ignores SQL alchemy and runs raw SQL)
@@ -91,23 +94,24 @@ class DbAccessor:
         rs = self.connection.execute(query)
         return insert_ts
 
-    def mark_strategy_filled(self, timestamp: pd.Timestamp, strategy: str, group: str) -> List[Tuple]:
+    def mark_strategy_filled(self, positions: List[Position]) -> List[Tuple]:
         """
         Used to mark a strategy as 'executed' - that is, the positions returned by the strategy have been correctly filled live.
-        :param timestamp: the insertion timestamp of the strategy positions we executed
-        :param strategy: the strategy name
-        :param group: the group if exists
+        :param positions: Fetched positions we just filled
         :return: likely empty result set
         """
+        if not positions:
+            raise Exception('Positions must be provided')
+        ids = ", ".join([str(pos.id) for pos in positions])
         processed_ts = datetime.now()
         query = text(
             """
                 UPDATE strategy_queue
                 SET processed_timestamp=:processed_ts
-                where timestamp=:timestamp and strategy=:strategy and "group"=:group;
+                where id in ({ids})
             """
         )
-        rs = self.connection.execute(query, processed_ts=processed_ts, timestamp=timestamp, strategy=strategy, group=group)
+        rs = self.connection.execute(query, processed_ts=processed_ts, ids=[pos.id for pos in positions])
         return rs
 
     def fetch_unfilled_strategies(self) -> List[Position]:
@@ -115,7 +119,7 @@ class DbAccessor:
         Returns all strategy positions in queue that have not been processed (waiting to execute).
         :return: A list of positions to execute
         """
-        to_pos = lambda x: Position(timestamp=pd.to_datetime(x[1]), strategy=x[2], quote=x[3], base=x[4], exchange=x[5], product_type=x[6], group=x[7], relative_size=x[8])
+        to_pos = lambda x: Position(id=x[0], timestamp=pd.to_datetime(x[1]), strategy=x[2], base=x[3], quote=x[4], exchange=x[5], product_type=x[6], group=x[7], relative_size=x[8])
         query = text(
             """
                 SELECT * from strategy_queue

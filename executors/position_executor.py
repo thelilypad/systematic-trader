@@ -1,37 +1,29 @@
 import json
-import typing
 from collections import Counter
 
-import pika
+from pika.exchange_type import ExchangeType
+
 import message_constants as msg
+from accessors.wrapped_ftx_client import WrappedFtxClient
 from config import Config
 from accessors.db_accessor import DbAccessor
 from accessors.ftx_order_handler import FtxOrderHandler
+from executors.simple_executor import SimpleExecutor
+from models.position import Position
 
-class PositionExecutor:
-    def __init__(self):
-        self.connection = pika.BlockingConnection(
-            pika.ConnectionParameters(host=Config.get_property("RABBITMQ_SERVER_URI", 'localhost').unwrap())
-        )
-        self.channel = self.connection.channel()
-        self.channel.exchange_declare(exchange=msg.POSITION_EXCHANGE, exchange_type='fanout')
-        r = self.channel.queue_declare(queue=msg.POSITION_EXECUTING_QUEUE)
-        self.channel.queue_bind(r.method.queue, msg.POSITION_EXCHANGE)
-        self.channel.basic_consume(queue=msg.POSITION_EXECUTING_QUEUE,
-                              on_message_callback=self.on_message,
-                              auto_ack=True)
-        self.order_handler = FtxOrderHandler(api_key=Config.get_property('FTX_API_KEY').unwrap(),
-                        api_secret=Config.get_property('FTX_API_SECRET').unwrap(),
-                        subaccount=Config.get_property('FTX_SUBACCOUNT_NAME').unwrap())
+
+class PositionExecutor(SimpleExecutor):
+    def __init__(self, rabbit_mq_host: str = None, api_key: str = None, api_secret: str = None, subaccount: str = None):
+        super().__init__(rabbit_mq_host=rabbit_mq_host,
+                         queue=msg.POSITION_EXECUTING_QUEUE, exchange=msg.POSITION_EXCHANGE, exchange_type=ExchangeType.fanout)
+        self.rest_client = WrappedFtxClient(api_key=api_key, api_secret=api_secret, subaccount_name=subaccount)
+        self.db_accessor = DbAccessor()
+        self._api_key = api_key
+        self._api_secret = api_secret
+        self._subacount = subaccount
 
     def on_error(self, error):
         pass
-
-    def net_positions(self, new_positions, old_positions):
-        positions = {}
-        for pos in old_positions:
-            pass
-        return []
 
     def __create_optimal_position_execution_ordering(self, counter: Counter):
         sales = {}
@@ -70,8 +62,9 @@ class PositionExecutor:
             else:
                 return f"{position.base}/{position.quote}"
 
-        existing_notional_exposures = {(f"{k}/USD" if 'PERP' not in k else k): v for (k, v) in self.order_handler.rest_client.get_notional_exposures().items()}
-        total_account_value = self.order_handler.rest_client.get_net_account_value()
+        existing_notional_exposures = {(f"{k}/USD" if 'PERP' not in k else k): v for (k, v) in
+                                       self.rest_client.get_notional_exposures().items()}
+        total_account_value = self.rest_client.get_net_account_value()
         # New positions represent relative weightings of the total account value
         # We should calculate the net position changes based on the existing positions vs. our optimal weightings
         notional_weightings = {}
@@ -82,28 +75,53 @@ class PositionExecutor:
         counter.subtract(Counter(existing_notional_exposures))
         return counter
 
-
     def execute_position_changes(self):
-        new_positions = DbAccessor().fetch_unfilled_strategies()
+        new_positions = self.db_accessor.fetch_unfilled_strategies()
         # For netting purposes, let's consider everything that isn't a PERP to be denominated in USDT
         # In the future, it may make sense
         counter = self.__get_notional_netted_weightings(new_positions)
-        counter = {'AVAX/USD': -100, 'AVAX-PERP': 50, 'SOL/USD': 50}
         orders = self.__create_optimal_position_execution_ordering(counter)
-        for idx, (market, _) in enumerate([('AVAX/USD', -100), ('AVAX-PERP', 50), ('SOL/USD', 50)]):
+        for idx, (market, _) in enumerate(orders):
+            # Ignore this malformed type
+            if market == 'USD/USD':
+                continue
             value = counter.get(market)
             side = 'buy' if value >= 0 else 'sell'
-            self.order_handler.fill_limit_order_in_quote_units(
-                market=market, side=side, size_in_quote=abs(value), aggression=min(.99, 0.5 + idx/len(orders))
-            )
+            try:
+                order_handler = FtxOrderHandler(api_key=self._api_key,
+                                                api_secret=self._api_secret,
+                                                subaccount=self._subacount)
+
+                order_data = order_handler.fill_limit_order_in_quote_units(
+                    market=market, side=side, size_in_quote=abs(value), aggression=0.5
+                )
+                order_handler.close()
+
+            except Exception as e:
+                self.channel.basic_publish(exchange=msg.POSITION_EXCHANGE, routing_key=msg.LOG_QUEUE, body=
+                json.dumps(
+                    {
+                        "message_type": "ERROR",
+                        "sender": "PositionExecutor",
+                        "message": str(e),
+                        "other_data": {"market": market, "exchange": "FTX"},
+                    }
+                ))
+                continue
+            self.channel.basic_publish(exchange=msg.POSITION_EXCHANGE, routing_key=msg.LOG_QUEUE, body=
+                json.dumps(
+                    {
+                        "message_type": "INFO",
+                        "sender": "PositionExecutor",
+                        "message": f"Successful fill - {market} @ {abs(value)} [{side}]",
+                        "other_data": {"market": market, "exchange": "FTX"},
+                    }
+                ))
             counter = self.__get_notional_netted_weightings(new_positions)
-            print(counter)
-            break
+        self.db_accessor.mark_strategy_filled(new_positions)
 
-    def on_message(self, ch, method, properties, body):
+    def on_message_consumption(self, ch, method, properties, body):
         b = json.loads(body)
-        print(b)
-
         if b['message_type'] == msg.TERMINATE_ALL_POSITIONS_EXC_MSG:
             print('Terminating position executor...')
             self.stop()
@@ -114,11 +132,11 @@ class PositionExecutor:
             print("Error occurred in scheduler/executor")
             self.on_error(b)
 
-    def run(self):
-        self.channel.start_consuming()
-
-    def stop(self):
-        self.connection.close()
 
 if __name__ == '__main__':
-    PositionExecutor().execute_position_changes()
+    PositionExecutor(
+        rabbit_mq_host=Config.get_property("RABBITMQ_SERVER_URI", 'localhost').unwrap(),
+        api_key=Config.get_property("FTX_API_KEY").unwrap(),
+        api_secret=Config.get_property("FTX_API_SECRET").unwrap(),
+        subaccount=Config.get_property("FTX_SUBACCOUNT_NAME").unwrap(),
+    ).execute_position_changes()

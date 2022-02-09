@@ -1,4 +1,8 @@
 import pandas as pd
+from dataclasses import dataclass
+
+
+@dataclass
 class Position:
     """
     A simple helper model representing a position as stored in `strategy_queue` DB table.
@@ -9,10 +13,12 @@ class Position:
     - A position represents a relative size (e.g. some fraction of -1 to 1 * total exposure allowed)
     - A position represents a {base, quote, exchange, product type}
     """
-    def __init__(self, strategy: str, group: str,
+
+    def __init__(self, id: int, strategy: str, group: str,
                  quote: str, base: str, exchange: str,
                  product_type: str, relative_size: float,
                  timestamp: pd.Timestamp = None, processed_timestamp: pd.Timestamp = None):
+        self.id = id
         self.timestamp = timestamp
         self.processed_timestamp = processed_timestamp
         self.strategy = strategy
