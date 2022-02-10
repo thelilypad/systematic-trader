@@ -3,13 +3,15 @@ import typing
 import pandas as pd
 from collections import defaultdict
 from datetime import timedelta
-from accessors.db_accessor import DbAccessor
+
 import multiprocess
 import time
 import sys
 from utils.utils import pluck
+import sqlalchemy as db
 
 sys.path.append('..')
+import accessors.db_accessor as db_accessor
 from config import Config
 from constants import *
 
@@ -217,9 +219,10 @@ class WrappedFtxClient:
         df['exchange'] = 'FTX'
         df['fetch_time'] = pd.to_datetime(time.time(), unit='s')
         if until_ts:
-            return df.loc[str(until_ts + timedelta(seconds=3600)):]
-        else:
-            return df
+            df = df.loc[str(until_ts + timedelta(seconds=3600)):]
+        df = df.reset_index()
+        df = df.rename(columns={"time": "timestamp", "rate": "funding_rate"})
+        return df
 
     def fetch_historical_data_since_beginning(self, client,
                                               symbol: str,
@@ -229,10 +232,10 @@ class WrappedFtxClient:
                                               ) -> pd.DataFrame:
 
 
-        if not resolution in self.RESOLUTIONS_MAP:
+        if not resolution in RESOLUTIONS_MAP:
             raise Exception(
                 f"{resolution} not found in RESOLUTIONS_MAP. Available resolutions are: {list(self.RESOLUTIONS_MAP.keys())}")
-        res = self.RESOLUTIONS_MAP[resolution]
+        res = RESOLUTIONS_MAP[resolution]
         start = time.time()
         results = []
         until = None
@@ -289,10 +292,11 @@ class WrappedFtxClient:
         write_table, db_write_queue, last_ts = argz
         engine = db.create_engine(Config.get_property("SQL_URI").unwrap())
         while True:
-            (symbol, df) = db_write_queue.get(block=True)
-            if df is None:
+            chunk = db_write_queue.get(block=True)
+            if chunk is None:
                 print('Shutting down write worker...')
                 break
+            (symbol, df) = chunk
             print(f'Writing {symbol} to {write_table}....')
             df.to_sql(write_table, con=engine, if_exists='append', index=False, method='multi')
 
@@ -347,9 +351,11 @@ class WrappedFtxClient:
         :return: {None}
         """
         until_ts = defaultdict(pd.Timestamp)
-        for listing in DbAccessor().get_symbol_last_funding():
-            (base, quote, product_type, exchange, last_fetch) = listing
-            until_ts[f"{base}-{quote}-{product_type}"] = pd.to_datetime(last_fetch)
+        for listing in db_accessor.DbAccessor().get_symbol_last_funding():
+            (market, exchange, last_fetch) = listing
+            base, quote, product_type, expiry_date = self.parse_symbol(market)
+            reconstructed_sym = f"{base}-{quote}-{product_type}"
+            until_ts[reconstructed_sym] = pd.to_datetime(last_fetch)
         tickers = self.get_available_tickers()
         tickers_to_fetch = tickers['perps']
         self.run_update_job(tickers_to_fetch, self.fetch_funding_data_since_beginning, 'funding_data', until_ts)
@@ -360,7 +366,7 @@ class WrappedFtxClient:
         :return: {None}
         """
         until_ts = defaultdict(pd.Timestamp)
-        for listing in DbAccessor().get_symbol_last_prices():
+        for listing in db_accessor.DbAccessor().get_symbol_last_prices():
             (base, quote, product_type, exchange, last_fetch) = listing
             until_ts[f"{base}-{quote}-{product_type}"] = pd.to_datetime(last_fetch)
 
@@ -374,4 +380,4 @@ if __name__ == '__main__':
         api_secret=Config.get_property('FTX_API_SECRET').unwrap(),
         subaccount_name=Config.get_property('FTX_SUBACCOUNT_NAME').unwrap()
     )
-    print(p.get_orderbook('BTC-PERP'))
+    p.run_update_all_prices()

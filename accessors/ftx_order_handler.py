@@ -5,34 +5,16 @@ from config import Config
 from accessors.ftx_web_socket import FtxWebsocketClient
 from accessors.wrapped_ftx_client import WrappedFtxClient
 import typing
+
+from models.order_data import OrderData
 from utils.utils import simple_pluck_dict
 import math
-from dataclasses import dataclass
 
 EXPECTED_WAIT = 1E-2  # We should poll every one hundredth of a second
 
 
 def round_to_n(number: float, n):
     return math.floor(number / n) * n
-
-@dataclass
-class OrderData:
-    def __init__(self, market: str, start_timestamp: float, end_timestamp: float,
-                 best_price: float, fill_average_price: float, slippage_ratio: float,
-                 fill_data: typing.List, order_quantity: float, quantity_type: str,
-                 unfilled_quantity: float, order_type: str):
-        self.market = market
-        self.start_timestamp = start_timestamp
-        self.end_timestamp = end_timestamp
-        self.best_price = best_price
-        self.fill_average_price = fill_average_price
-        self.slippage_ratio = slippage_ratio
-        self.fill_data = fill_data
-        self.order_quantity = order_quantity
-        self.quantity_type = quantity_type
-        self.unfilled_quantity = unfilled_quantity
-        self.order_type = order_type
-
 
 class FtxOrderHandler:
     def __init__(self, api_key: str = None, api_secret: str = None, subaccount: str = None):
@@ -206,8 +188,12 @@ class FtxOrderHandler:
         fill_total_price = sum([f['size'] * f['price'] for f in self._fills])
         fill_avg_price = fill_total_price / sum([f['size'] for f in self._fills])
         slippage_ratio = fill_avg_price / original_best_price - 1
+        base, quote, product_type, _ = self.rest_client.parse_symbol(market)
         return OrderData(
-            market=market,
+            quote=quote,
+            base=base,
+            exchange='FTX',
+            product_type=product_type,
             start_timestamp=start_order_time * 1000,
             end_timestamp=end_time * 1000,
             best_price=original_best_price,

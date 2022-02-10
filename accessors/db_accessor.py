@@ -2,8 +2,11 @@ from datetime import datetime
 
 import sqlalchemy as db
 from sqlalchemy.sql import text
+import sys, os
 
+sys.path.insert(0, os.path.abspath('..'))
 from models.position import Position
+from models.order_data import OrderData
 from config import Config
 import pandas as pd
 from typing import List, Tuple
@@ -68,6 +71,14 @@ class DbAccessor:
         result = self.connection.execute(query, date_cutoff=str(date_cutoff)).fetchall()
         return result
 
+    def write_successful_fill(self, order_data: OrderData) -> pd.Timestamp:
+        insert_ts = datetime.now()
+        query = text(
+            OrderData.to_insert(order_data, "fills")
+        )
+        rs = self.connection.execute(query)
+        return insert_ts
+
     def write_new_strategy_positions(self, positions: List[Position]) -> pd.Timestamp:
         """
         Writes a list of positions returned from a strategy run to the strategy_queue table.
@@ -94,15 +105,15 @@ class DbAccessor:
         rs = self.connection.execute(query)
         return insert_ts
 
-    def mark_strategy_filled(self, positions: List[Position]) -> List[Tuple]:
+    def mark_strategy_filled(self, position_ids: List) -> List[Tuple]:
         """
         Used to mark a strategy as 'executed' - that is, the positions returned by the strategy have been correctly filled live.
-        :param positions: Fetched positions we just filled
+        :param position_ids: Fetched positions we just filled
         :return: likely empty result set
         """
-        if not positions:
+        if not position_ids:
             raise Exception('Positions must be provided')
-        ids = ", ".join([str(pos.id) for pos in positions])
+        ids = ", ".join(position_ids)
         processed_ts = datetime.now()
         query = text(
             """
@@ -111,8 +122,11 @@ class DbAccessor:
                 where id in ({ids})
             """
         )
-        rs = self.connection.execute(query, processed_ts=processed_ts, ids=[pos.id for pos in positions])
-        return rs
+        try:
+            rs = self.connection.execute(query, processed_ts=processed_ts, ids=[pos.id for pos in positions])
+            return rs
+        except Exception as e:
+            raise DbWriteException(e)
 
     def fetch_unfilled_strategies(self) -> List[Position]:
         """

@@ -4,31 +4,22 @@ import pika
 import message_constants as msg
 import json
 from config import Config
+from executors.simple_executor import SimpleExecutor
+
 """
 Simple clock setup for dictating when the position recalculation job should execute.
 """
-class StrategyClock:
-    def __init__(self):
-        self.connection = pika.BlockingConnection(
-            pika.ConnectionParameters(host=Config.get_property("RABBITMQ_SERVER_URI", 'localhost').unwrap())
-        )
-        self.channel = self.connection.channel()
-        self.channel.exchange_declare(msg.POSITION_EXCHANGE, exchange_type='fanout')
-        r = self.channel.queue_declare(queue=msg.CLOCK_QUEUE)
-        self.channel.queue_bind(r.method.queue, exchange=msg.POSITION_EXCHANGE)
-        self.channel.basic_consume(queue=msg.CLOCK_QUEUE,
-                                   on_message_callback=self.stop,
-                                   auto_ack=True)
-        print(' [*] Waiting for messages. To exit press CTRL+C')
+class ClockExecutor(SimpleExecutor):
+    def __init__(self, rabbit_mq_host: str):
+        super().__init__(rabbit_mq_host=rabbit_mq_host, exchange=msg.POSITION_EXCHANGE, exchange_type=ExchangeType.fanout, queue=msg.CLOCK_QUEUE)
 
     def trigger_position_execution(self):
-        self.channel.basic_publish(exchange='positions', routing_key=msg.POSITION_EXECUTING_QUEUE, body=json.dumps({"message_type": msg.CHANGE_POSITION_MSG}))
+        self.channel.basic_publish(exchange=msg.POSITION_EXCHANGE, routing_key=msg.POSITION_EXECUTING_QUEUE, body=json.dumps({"message_type": msg.CHANGE_POSITION_MSG}))
 
     def trigger_position_recalculation(self):
-        self.channel.basic_publish(exchange='positions', routing_key=msg.POSITION_SCHEDULING_QUEUE, body=json.dumps({"message_type": msg.POSITION_RECALCULATION_MSG}))
+        self.channel.basic_publish(exchange=msg.POSITION_EXCHANGE, routing_key=msg.POSITION_SCHEDULING_QUEUE, body=json.dumps({"message_type": msg.POSITION_RECALCULATION_MSG}))
 
     def run(self):
-        schedule.every(1).seconds.do()
         schedule.every(5).seconds.do(self.trigger_position_recalculation)
         schedule.every(10).seconds.do(self.trigger_position_execution)
         self.channel.start_consuming()

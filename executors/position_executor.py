@@ -96,7 +96,11 @@ class PositionExecutor(SimpleExecutor):
                     market=market, side=side, size_in_quote=abs(value), aggression=0.5
                 )
                 order_handler.close()
-
+                self.channel.basic_publish(exchange=msg.POSITION_EXCHANGE, routing_key=msg.DB_WRITE_QUEUE,
+                                           body=json.dumps({
+                                               'message_type': 'record_fills',
+                                               'order_data': order_data,
+                                           }))
             except Exception as e:
                 self.channel.basic_publish(exchange=msg.POSITION_EXCHANGE, routing_key=msg.LOG_QUEUE, body=
                 json.dumps(
@@ -118,7 +122,11 @@ class PositionExecutor(SimpleExecutor):
                     }
                 ))
             counter = self.__get_notional_netted_weightings(new_positions)
-        self.db_accessor.mark_strategy_filled(new_positions)
+        self.channel.basic_publish(exchange=msg.POSITION_EXCHANGE, routing_key=msg.DB_WRITER_QUEUE,
+                                   body=json.dumps({
+                                       'message_type': 'mark_strategy_filled',
+                                       'position_ids': [pos.id for pos in new_positions],
+                                   }))
 
     def on_message_consumption(self, ch, method, properties, body):
         b = json.loads(body)

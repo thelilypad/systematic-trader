@@ -13,18 +13,13 @@ class Position:
     - A position represents a relative size (e.g. some fraction of -1 to 1 * total exposure allowed)
     - A position represents a {base, quote, exchange, product type}
     """
-
-    def __init__(self, id: int, strategy: str, group: str,
-                 quote: str, base: str, exchange: str,
-                 product_type: str, relative_size: float,
-                 timestamp: pd.Timestamp = None, processed_timestamp: pd.Timestamp = None):
-        self.id = id
-        self.timestamp = timestamp
-        self.processed_timestamp = processed_timestamp
-        self.strategy = strategy
-        self.group = group
-        self.quote = quote
-        self.base = base
-        self.exchange = exchange
-        self.product_type = product_type
-        self.relative_size = relative_size
+    id: int
+    strategy: str
+    group: str
+    quote: str
+    base: str
+    exchange: str
+    product_type: str
+    relative_size: float
+    processed_timestamp: pd.Timestamp
+    timestamp: pd.Timestamp = None
