@@ -58,13 +58,10 @@ class DbWriterExecutor(SimpleExecutor):
         self.db_accessor.write_successful_fill(order_data)
 
     def on_db_write_error(self, error: DbWriteException):
-        # Implement some handling for db write errors to log and shut down
-        # stuff gracefully (?)
-        pass
-
+        self.message_helper.log_error_message(exception=str(error), other_data={"context": error.__context__})
 
 if __name__ == "__main__":
     DbWriterExecutor(rabbit_mq_host=Config.get_property("RABBITMQ_SERVER_URI", 'localhost').unwrap(),
                      api_key=Config.get_property("FTX_API_KEY").unwrap(),
                      api_secret=Config.get_property("FTX_API_SECRET").unwrap(),
-                     subaccount=Config.get_property("FTX_SUBACCOUNT_NAME").unwrap()).on_record_fills({})
+                     subaccount=Config.get_property("FTX_SUBACCOUNT_NAME").unwrap()).run()

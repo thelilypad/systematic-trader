@@ -71,6 +71,18 @@ class DbAccessor:
         result = self.connection.execute(query, date_cutoff=str(date_cutoff)).fetchall()
         return result
 
+    def get_funding_data_since(self, date_cutoff: pd.Timestamp) -> List[Tuple]:
+        """
+        Get all price data of all asset funding data since a specific datetime.
+        :param date_cutoff: A datetime to use as a cutoff for fetching
+        :return: All price data available since {date_cutoff}
+        """
+        query = text(
+            """SELECT * from funding_data where timestamp > :date_cutoff"""
+        )
+        result = self.connection.execute(query, date_cutoff=str(date_cutoff)).fetchall()
+        return result
+
     def write_successful_fill(self, order_data: OrderData) -> pd.Timestamp:
         insert_ts = datetime.now()
         query = text(
@@ -113,17 +125,14 @@ class DbAccessor:
         """
         if not position_ids:
             raise Exception('Positions must be provided')
-        ids = ", ".join(position_ids)
+        print(position_ids)
+        ids = ", ".join([str(i) for i in position_ids])
         processed_ts = datetime.now()
         query = text(
-            """
-                UPDATE strategy_queue
-                SET processed_timestamp=:processed_ts
-                where id in ({ids})
-            """
+            f"UPDATE strategy_queue SET processed_timestamp=:processed_ts where id in ({ids})"
         )
         try:
-            rs = self.connection.execute(query, processed_ts=processed_ts, ids=[pos.id for pos in positions])
+            rs = self.connection.execute(query, processed_ts=processed_ts, ids=ids)
             return rs
         except Exception as e:
             raise DbWriteException(e)
@@ -133,7 +142,7 @@ class DbAccessor:
         Returns all strategy positions in queue that have not been processed (waiting to execute).
         :return: A list of positions to execute
         """
-        to_pos = lambda x: Position(id=x[0], timestamp=pd.to_datetime(x[1]), strategy=x[2], base=x[3], quote=x[4], exchange=x[5], product_type=x[6], group=x[7], relative_size=x[8])
+        to_pos = lambda x: Position(id=x[0], timestamp=pd.to_datetime(x[1]), strategy=x[2], quote=x[3], base=x[4], exchange=x[5], product_type=x[6], group=x[7], relative_size=x[8])
         query = text(
             """
                 SELECT * from strategy_queue
@@ -145,12 +154,23 @@ class DbAccessor:
 
 if __name__ == '__main__':
     position = Position(
+        id=1,
         strategy='alpha1',
         group='',
-        base='BTC',
-        quote='USDT',
+        base='USD',
+        quote='BTC',
         exchange='FTX',
-        product_type='PERP',
-        relative_size=0.5
+        product_type='USD',
+        relative_size=0.03
     )
-    print(DbAccessor().fetch_unfilled_strategies()[0].__dict__)
+    position2 = Position(
+        id=2,
+        strategy='alpha1',
+        group='',
+        base='USD',
+        quote='AVAX',
+        exchange='FTX',
+        product_type='USD',
+        relative_size=0.94
+    )
+    print(DbAccessor().fetch_unfilled_strategies())

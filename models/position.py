@@ -21,5 +21,5 @@ class Position:
     exchange: str
     product_type: str
     relative_size: float
-    processed_timestamp: pd.Timestamp
+    processed_timestamp: pd.Timestamp = None
     timestamp: pd.Timestamp = None

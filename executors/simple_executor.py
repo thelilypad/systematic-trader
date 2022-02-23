@@ -1,6 +1,9 @@
 import abc
 import pika
 
+from executors.message_helper import MessageHelper
+
+
 class SimpleExecutor:
     """
     Simple implementation of a RabbitMQ pubsub process which can be ran independently, listening and receiving messages.
@@ -16,6 +19,8 @@ class SimpleExecutor:
         self.channel.basic_consume(queue=queue,
                                    on_message_callback=self.on_message_consumption,
                                    auto_ack=True)
+        # This looks like magic, but it should properly reflect the name of the superclass extending this
+        self.message_helper = MessageHelper(self.channel, self.__class__.__name__)
         print(' [*] Waiting for messages. To exit press CTRL+C')
 
     @abc.abstractmethod

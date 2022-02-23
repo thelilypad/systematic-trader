@@ -380,4 +380,4 @@ if __name__ == '__main__':
         api_secret=Config.get_property('FTX_API_SECRET').unwrap(),
         subaccount_name=Config.get_property('FTX_SUBACCOUNT_NAME').unwrap()
     )
-    p.run_update_all_prices()
+    print(p.get_notional_exposures())

@@ -78,12 +78,16 @@ class WebsocketManager:
         finally:
             self._reconnect(ws)
 
+    def on_reconnect(self):
+        pass
+
     def _reconnect(self, ws):
         assert ws is not None, '_reconnect should only be called with an existing ws'
         if ws is self.ws and not self.permanent_stop:
             self.ws = None
             ws.close()
             self.connect()
+            self.on_reconnect()
 
     def connect(self):
         if self.ws:
@@ -99,10 +103,12 @@ class WebsocketManager:
         if self.ws:
             self.ws.close()
 
-    def _on_close(self, ws):
+    def _on_close(self, ws, foo, bar):
         self._reconnect(ws)
 
     def _on_error(self, ws, error):
+        print(error)
+        print('Websocket error has occurred')
         self._reconnect(ws)
 
     def reconnect(self) -> None:
@@ -190,6 +196,11 @@ class FtxWebsocketClient(WebsocketManager):
         self.send_json({'op': 'unsubscribe', **subscription})
         while subscription in self._subscriptions:
             self._subscriptions.remove(subscription)
+
+    def on_reconnect(self):
+        self._login()
+        for subscription in self._subscriptions:
+            self.send_json({'op': 'subscribe', **subscription})
 
     def get_fills(self) -> List[Dict]:
         if not self._logged_in:

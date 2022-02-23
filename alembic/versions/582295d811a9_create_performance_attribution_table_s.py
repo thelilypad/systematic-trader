@@ -35,8 +35,6 @@ def upgrade():
         sa.Column('base', sa.String()),
         sa.Column('exchange', sa.String()),
         sa.Column('product_type', sa.String()),
-        sa.Column('start_timestamp', sa.TIMESTAMP()),
-        sa.Column('end_timestamp', sa.TIMESTAMP()),
         sa.Column('best_price', sa.Float()),
         sa.Column('fill_average_price', sa.Float()),
         sa.Column('slippage_ratio', sa.Float()),
@@ -44,6 +42,8 @@ def upgrade():
         sa.Column('order_quantity_quote', sa.String()),
         sa.Column('order_type', sa.String()),
         sa.Column('unfilled_quantity_quote', sa.String()),
+        sa.Column('start_timestamp', sa.Numeric()),
+        sa.Column('end_timestamp', sa.Numeric()),
     )
 
 

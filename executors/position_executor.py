@@ -10,7 +10,7 @@ from accessors.db_accessor import DbAccessor
 from accessors.ftx_order_handler import FtxOrderHandler
 from executors.simple_executor import SimpleExecutor
 from models.position import Position
-
+import dataclasses
 
 class PositionExecutor(SimpleExecutor):
     def __init__(self, rabbit_mq_host: str = None, api_key: str = None, api_secret: str = None, subaccount: str = None):
@@ -77,6 +77,8 @@ class PositionExecutor(SimpleExecutor):
 
     def execute_position_changes(self):
         new_positions = self.db_accessor.fetch_unfilled_strategies()
+        if not new_positions:
+            raise Exception('No positions found')
         # For netting purposes, let's consider everything that isn't a PERP to be denominated in USDT
         # In the future, it may make sense
         counter = self.__get_notional_netted_weightings(new_positions)
@@ -96,37 +98,14 @@ class PositionExecutor(SimpleExecutor):
                     market=market, side=side, size_in_quote=abs(value), aggression=0.5
                 )
                 order_handler.close()
-                self.channel.basic_publish(exchange=msg.POSITION_EXCHANGE, routing_key=msg.DB_WRITE_QUEUE,
-                                           body=json.dumps({
-                                               'message_type': 'record_fills',
-                                               'order_data': order_data,
-                                           }))
+                self.message_helper.db_write_fill_order_data(order_data=dataclasses.asdict(order_data))
             except Exception as e:
-                self.channel.basic_publish(exchange=msg.POSITION_EXCHANGE, routing_key=msg.LOG_QUEUE, body=
-                json.dumps(
-                    {
-                        "message_type": "ERROR",
-                        "sender": "PositionExecutor",
-                        "message": str(e),
-                        "other_data": {"market": market, "exchange": "FTX"},
-                    }
-                ))
+                print(f'Exception occurred {e}')
+                self.message_helper.log_error_message(exception=str(e), other_data={"market": market, "exchange": "FTX"})
                 continue
-            self.channel.basic_publish(exchange=msg.POSITION_EXCHANGE, routing_key=msg.LOG_QUEUE, body=
-                json.dumps(
-                    {
-                        "message_type": "INFO",
-                        "sender": "PositionExecutor",
-                        "message": f"Successful fill - {market} @ {abs(value)} [{side}]",
-                        "other_data": {"market": market, "exchange": "FTX"},
-                    }
-                ))
+            self.message_helper.log_info_message(message=f"Successful fill - {market} @ {abs(value)} [{side}]", other_data={"market": market, "exchange": "FTX"})
             counter = self.__get_notional_netted_weightings(new_positions)
-        self.channel.basic_publish(exchange=msg.POSITION_EXCHANGE, routing_key=msg.DB_WRITER_QUEUE,
-                                   body=json.dumps({
-                                       'message_type': 'mark_strategy_filled',
-                                       'position_ids': [pos.id for pos in new_positions],
-                                   }))
+        self.message_helper.db_write_strategy_filled(position_ids=[pos.id for pos in new_positions])
 
     def on_message_consumption(self, ch, method, properties, body):
         b = json.loads(body)
@@ -142,9 +121,32 @@ class PositionExecutor(SimpleExecutor):
 
 
 if __name__ == '__main__':
-    PositionExecutor(
+    pos1 = [Position(
+        id=1,
+        strategy='alpha1',
+        group='',
+        quote='USD',
+        base='AVAX',
+        exchange='FTX',
+        product_type='SPOT',
+        relative_size=0.81,
+    ),
+    Position(
+        id=1,
+        strategy='alpha1',
+        group='',
+        quote='USD',
+        base='AVAX',
+        exchange='FTX',
+        product_type='PERP',
+        relative_size=0.15,
+    )
+    ]
+    DbAccessor().write_new_strategy_positions(pos1)
+    p = PositionExecutor(
         rabbit_mq_host=Config.get_property("RABBITMQ_SERVER_URI", 'localhost').unwrap(),
         api_key=Config.get_property("FTX_API_KEY").unwrap(),
         api_secret=Config.get_property("FTX_API_SECRET").unwrap(),
         subaccount=Config.get_property("FTX_SUBACCOUNT_NAME").unwrap(),
-    ).execute_position_changes()
+    )
+    p.execute_position_changes()

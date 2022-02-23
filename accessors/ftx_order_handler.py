@@ -1,4 +1,5 @@
 import collections
+import json
 from datetime import datetime
 import time
 from config import Config
@@ -16,18 +17,17 @@ EXPECTED_WAIT = 1E-2  # We should poll every one hundredth of a second
 def round_to_n(number: float, n):
     return math.floor(number / n) * n
 
+
 class FtxOrderHandler:
     def __init__(self, api_key: str = None, api_secret: str = None, subaccount: str = None):
         self.rest_client = WrappedFtxClient(api_key=api_key, api_secret=api_secret, subaccount_name=subaccount)
-        self.websocket_client = FtxWebsocketClient(api_key=api_key, api_secret=api_secret, subaccount=subaccount,
-                                                   orderbook_handler=self.on_orderbook_event,
-                                                   fill_handler=self.on_active_fill,
-                                                   orders_handler=self.on_handle_order)
         self.min_sizes = {market: minOrderSize for (market, minOrderSize) in
                           [simple_pluck_dict(d, ['name', 'minProvideSize']) for d in
                            self.rest_client.client.get_markets()]}
-        self.websocket_client.get_fills()
         self._reset_state()
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.subaccount = subaccount
 
     def _reset_state(self):
         self.best_mid = None
@@ -53,12 +53,9 @@ class FtxOrderHandler:
             self._open_orders[data['market']][data['id']] = data
 
     def on_active_fill(self, message):
-        print(message)
-
         if not message['channel'] or message['channel'] != 'fills':
             raise Exception('Message malformed')
         data = message['data']
-        print(message)
         if self._order_size_type == 'QUOTE':
             # If we're trying to fill a certain amount of quote units, we should find the true notional
             # which is size * price
@@ -132,6 +129,11 @@ class FtxOrderHandler:
         print(f'Trying to fill {market} {side} {size}')
         if aggression >= 1 or aggression <= 0:
             raise Exception(f'Aggression coefficient must be between (non-inclusive) 0 and 1, provided {aggression}')
+        self.websocket_client = FtxWebsocketClient(api_key=self.api_key, api_secret=self.api_secret,
+                                                   subaccount=self.subaccount,
+                                                   orderbook_handler=self.on_orderbook_event,
+                                                   fill_handler=self.on_active_fill,
+                                                   orders_handler=self.on_handle_order)
         # Create a skew of how we quote in the spread -- we should use the provided aggression coefficient
         # to create a skew according to side - if aggression is 0.6 and this is a sell, we should return [0.6, 0.4]
         # (skewing to best bid); if this is a buy we should return [0.4, 0.6]
@@ -139,6 +141,7 @@ class FtxOrderHandler:
         # Enable websocket updates of the market orderbook so we can continually stream in our strategy's best bid/ask
         self.websocket_client.get_orderbook(market)
         self.websocket_client.get_orders()
+        self.websocket_client.get_fills()
         # Maintain this order due to asynchronicity - it is possible our order instantly fills even as a limit
         self._remaining_size = size
         # Hold this thread until we receive the first orderbook update
@@ -164,27 +167,29 @@ class FtxOrderHandler:
             if time.time() - self.last_fetch_time < EXPECTED_WAIT:
                 # We should pause for 1/100th of a second to check if the order has been filled before progressing
                 continue
+            if len(self._open_orders[market]) > 1:
+                # pipe out an error
+                print('Multiple orders open at once')
+            current_price = None
             if len(self._open_orders[market]):
-                if len(self._open_orders[market]) > 1:
-                    # pipe out an error
-                    print('Multiple orders open at once')
                 current_price = self._open_orders[market][list(self._open_orders[market].keys())[0]]['price']
-                if current_price == self.best_mid:
-                    continue
-                else:
-                    if self.get_size_in_base() > min_available_size:
-                        self.rest_client.cancel_orders(market)
-                        # cache the new size post order cancellation, just in case the cancel is filled
-                        if self.get_size_in_base() < min_available_size:
-                            break
-                        while len(self._open_orders[market].keys()):
-                            continue
-                        print(f"Placing order at {self.best_mid} for {self.get_size_in_base()}")
-                        self.rest_client.client.place_order(market, side, self.best_mid, self.get_size_in_base(),
-                                                            'limit',
-                                                            reduce_only, ioc, post_only, client_id)
+            if current_price == self.best_mid:
+                continue
+            else:
+                if self.get_size_in_base() > min_available_size:
+                    self.rest_client.cancel_orders(market)
+                    # cache the new size post order cancellation, just in case the cancel is filled
+                    if self.get_size_in_base() < min_available_size:
+                        break
+                    while len(self._open_orders[market].keys()):
+                        continue
+                    print(f"Placing order at {self.best_mid} for {self.get_size_in_base()}")
+                    self.rest_client.client.place_order(market, side, self.best_mid, self.get_size_in_base(),
+                                                        'limit',
+                                                        reduce_only, ioc, post_only, client_id)
         end_time = time.time()
         self.websocket_client.unsubscribe({'channel': 'orderbook', 'market': market})
+        self.websocket_client.close()
         fill_total_price = sum([f['size'] * f['price'] for f in self._fills])
         fill_avg_price = fill_total_price / sum([f['size'] for f in self._fills])
         slippage_ratio = fill_avg_price / original_best_price - 1
@@ -194,16 +199,16 @@ class FtxOrderHandler:
             base=base,
             exchange='FTX',
             product_type=product_type,
-            start_timestamp=start_order_time * 1000,
-            end_timestamp=end_time * 1000,
             best_price=original_best_price,
             fill_average_price=fill_avg_price,
             slippage_ratio=slippage_ratio,
-            fill_data=self._fills,
+            fill_json=json.dumps(self._fills),
             order_quantity=size,
             quantity_type=self._order_size_type,
             unfilled_quantity=self._remaining_size,
             order_type="LIMIT",
+            start_timestamp=start_order_time * 1000,
+            end_timestamp=end_time * 1000,
         )
 
     def __warn_if_high_slippage(self, market, side, size):
@@ -235,4 +240,4 @@ if __name__ == '__main__':
         api_secret=Config.get_property("FTX_API_SECRET").unwrap(),
         subaccount=Config.get_property("FTX_SUBACCOUNT_NAME").unwrap(),
     )
-    print(f.fill_limit_order_in_quote_units('AVAX/USD', 'buy', size_in_quote=3000))
+    print(f.rest_client.get_notional_exposures())

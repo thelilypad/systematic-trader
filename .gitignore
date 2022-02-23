@@ -1,5 +1,6 @@
 # Project-specific files
 config.yaml
+strategies/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
